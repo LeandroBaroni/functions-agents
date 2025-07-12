@@ -5,15 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1751938577932,
-      "tag": "0000_friendly_maverick",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1752078681189,
-      "tag": "0001_naive_luminals",
+      "when": 1752288985927,
+      "tag": "0000_goofy_garia",
       "breakpoints": true
     }
   ]

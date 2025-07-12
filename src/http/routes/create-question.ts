@@ -1,7 +1,9 @@
+import { and, eq, sql } from "drizzle-orm";
 import type { FastifyPluginCallbackZod } from "fastify-type-provider-zod";
 import z from "zod";
 import { db } from "../../db/connection.ts";
 import { schema } from "../../db/schema/index.ts";
+import { generateAnswer, generateEmbeddings } from "../../services/gemini.ts";
 
 const schemaParamsValidation = z.object({
   roomId: z.string().trim(),
@@ -9,29 +11,58 @@ const schemaParamsValidation = z.object({
 
 const schemaBodyValidation = z.object({
   question: z.string().trim().min(1, "Question is required"),
-  answer: z.string().trim().min(1, "Answer is required"),
+  answer: z.string().trim().min(1, "Answer is required").optional(),
 });
 
 export const createQuestionRoute: FastifyPluginCallbackZod = (app) => {
   app.post("/rooms/:roomId/questions", async (request, reply) => {
-    const { question, answer } = schemaBodyValidation.parse(request.body);
     const { roomId } = schemaParamsValidation.parse(request.params);
+    const { question } = schemaBodyValidation.parse(request.body);
 
-    const results = await db
-      .insert(schema.questions)
-      .values({
-        question,
-        answer,
-        roomId,
+    const embeddings = await generateEmbeddings(question);
+
+    const embeddingsAsString = `[${embeddings.join(",")}]`;
+
+    const chunks = await db
+      .select({
+        id: schema.audioChunks.id,
+        transcription: schema.audioChunks.transcription,
+        similarity: sql<number>`1 - (${schema.audioChunks.embeddings} <=> ${embeddingsAsString}::vector)`,
       })
-      .returning();
+      .from(schema.audioChunks)
+      .where(
+        and(
+          eq(schema.audioChunks.roomId, roomId),
+          sql`1 - (${schema.audioChunks.embeddings} <=> ${embeddingsAsString}::vector) > 0.7`
+        )
+      )
+      .orderBy(
+        sql`${schema.audioChunks.embeddings} <=> ${embeddingsAsString}::vector`
+      )
+      .limit(3);
 
-    const data = results[0];
+    let answer: string | null = null;
 
-    if (!data) {
-      throw new Error("Failed to create question");
+    if (chunks.length > 0) {
+      const transcriptions = chunks.map((chunk) => chunk.transcription);
+
+      answer = await generateAnswer(question, transcriptions);
     }
 
-    return reply.status(201).send({ id: data.id });
+    const result = await db
+      .insert(schema.questions)
+      .values({ roomId, question, answer })
+      .returning();
+
+    const insertedQuestion = result[0];
+
+    if (!insertedQuestion) {
+      throw new Error("Failed to create new room.");
+    }
+
+    return reply.status(201).send({
+      questionId: insertedQuestion.id,
+      answer,
+    });
   });
 };
